@@ -1,0 +1,31 @@
+# ---- Keep only Code/ tracked; ignore everything else you don't want on GitHub ----
+
+# Ignore common project folders you want to keep local
+Code_OP/
+Input_Files/
+Output_Files/
+
+# Python caches (root and inside Code/)
+**/__pycache__/
+*.py[cod]
+
+# Virtual envs
+.venv/
+venv/
+env/
+.env
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Explicitly ensure Code/ is not ignored
+!Code/
+!Code/**
+
+# Allow tracking README and .gitignore itself (optional but useful)
+!.gitignore
+!README.md
+!requirements.txt
