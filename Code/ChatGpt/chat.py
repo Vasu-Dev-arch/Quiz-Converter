@@ -18,6 +18,8 @@ Notes:
 import sys
 import os
 import re
+import tkinter as tk
+from tkinter import filedialog, messagebox
 import unicodedata
 from typing import List, Optional
 from docx import Document
@@ -385,33 +387,34 @@ def create_output_docx_tables(questions: List[dict], output_path: str):
     # Save
     doc.save(output_path)
 
-# --------------------------
-# CLI entrypoint
-# --------------------------
-def main(argv):
-    if len(argv) < 3:
-        print("Usage: python quizformatter_cli.py input.docx output.docx")
-        return 1
-    input_path = argv[1]
-    output_path = argv[2]
-    if not os.path.isfile(input_path):
-        print(f"Input file not found: {input_path}")
-        return 2
-    print(f"Reading: {input_path}")
-    questions = parse_docx_to_questions(input_path, verbose=True)
+def main():
+    root = tk.Tk()
+    root.withdraw()  # hide the root window
+
+    input_path = filedialog.askopenfilename(
+        title="Select Input Word File",
+        filetypes=[("Word Documents", "*.docx")]
+    )
+    if not input_path:
+        messagebox.showinfo("QuizFormatter", "No input file selected.")
+        return
+
+    output_path = filedialog.asksaveasfilename(
+        title="Save Formatted Output As",
+        defaultextension=".docx",
+        filetypes=[("Word Documents", "*.docx")]
+    )
+    if not output_path:
+        messagebox.showinfo("QuizFormatter", "No output file selected.")
+        return
+
+    questions = parse_docx_to_questions(input_path, verbose=False)
     if not questions:
-        print("No questions parsed. Check input formatting.")
-        return 3
-    # show summary and first question preview
-    print(f"Parsed {len(questions)} questions. Example (Q1 preview):")
-    print("Q1 question:", questions[0]['question'][:200])
-    print("Q1 options:", questions[0]['options'])
-    print("Q1 answer:", questions[0]['answer'], "(assumed)" if questions[0].get('assumed') else "")
-    # write output
-    print(f"Writing formatted output to: {output_path}")
+        messagebox.showerror("QuizFormatter", "No questions could be parsed. Check your input file.")
+        return
+
     create_output_docx_tables(questions, output_path)
-    print("Done.")
-    return 0
+    messagebox.showinfo("QuizFormatter", f"Formatted document saved at:\n{output_path}")
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    main()
