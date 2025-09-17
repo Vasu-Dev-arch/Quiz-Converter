@@ -1,241 +1,97 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-from tkinter.scrolledtext import ScrolledText
-from docx import Document
-from docx.shared import Pt
-import re
-import os
 
-def merge_cells(row, start, end):
-    row.cells[start].merge(row.cells[end])
-
-def create_question_table(doc, qdata):
-    table = doc.add_table(rows=8, cols=3)
-    table.style = 'Table Grid'
-
-    # Row 0: Question (merge col 1 & 2)
-    table.cell(0, 0).text = "Question"
-    cell_q = table.cell(0, 1)
-    cell_q.text = qdata['question']
-    merge_cells(table.rows[0], 1, 2)
-
-    # Row 1: Type (merge col 1 & 2)
-    table.cell(1, 0).text = "Type"
-    cell_type = table.cell(1, 1)
-    cell_type.text = "multiple_choice"
-    merge_cells(table.rows[1], 1, 2)
-
-    # Rows 2–5: Options (label, content, correct/incorrect)
-    for i in range(4):
-        table.cell(2 + i, 0).text = "Option"
-        table.cell(2 + i, 1).text = qdata['options'][i] if i < len(qdata['options']) else ""
-        table.cell(2 + i, 2).text = "correct" if i == qdata['correct'] else "incorrect"
-
-    # Row 6: Solution (merge col 1 & 2)
-    table.cell(6, 0).text = "Solution"
-    cell_sol = table.cell(6, 1)
-    cell_sol.text = qdata.get('solution', "")
-    merge_cells(table.rows[6], 1, 2)
-
-    # Row 7: Marks
-    table.cell(7, 0).text = "Marks"
-    table.cell(7, 1).text = "1"
-    table.cell(7, 2).text = "0"
-
-def find_answer_index(options, ans_text):
-    ans_text = ans_text.strip().lower()
-    # a, (a), b etc
-    m = re.match(r'^[\(\[]?([a-d])[.\)\]]?', ans_text)
-    if m:
-        idx = ord(m.group(1)) - ord('a')
-        if 0 <= idx < 4:
-            return idx
-    # Try to match answer text with option content (case-insensitive, strip spaces)
-    for i, op in enumerate(options):
-        if ans_text and ans_text in op.lower():
-            return i
-    return 0
-
-def parse_docx_questions(filepath):
-    doc = Document(filepath)
-    text_blocks = []
-    buf = []
-
-    # Gather all non-empty paragraphs, ignore decorations
-    for p in doc.paragraphs:
-        t = p.text.strip()
-        if not t: continue
-        # Treat common separators as block splitters
-        if re.fullmatch(r'-{2,}|—{1,}', t) or re.fullmatch(r'\\d+\\.', t):
-            if buf:
-                text_blocks.append(buf)
-                buf=[]
-        else:
-            buf.append(t)
-    if buf: text_blocks.append(buf)
-
-    questions = []
-    for block in text_blocks:
-        question_lines = []
-        options = []
-        answer = ""
-        solution = ""
-        opt_stage = False
-        solution_stage = False
-        answer_stage = False
-
-        for line in block:
-            # Single line "Options:" with inline options e.g. "Options: (a)...(b)..."
-            if not opt_stage and re.match(r'^Options?:', line, re.I):
-                # Extract inline options, e.g. "Options: (a) foo (b) bar (c) baz (d) qux"
-                opts_inline = re.findall(r'\\([a-d]\\)|([a-d])\\.\\s*([^\\(\\[]+?)(?=\\s*\\([a-d]\\)|\\b[a-d]\\.|\s*$)', line, re.I)
-                if opts_inline:
-                    # Each tuple may have either group 2 or 3, flatten
-                    col_opts = []
-                    for o in opts_inline:
-                        for group in o[1:]:
-                            if group: col_opts.append(group.strip())
-                    options = col_opts if col_opts else options
-                else:
-                    # Or just start options stage, if not inline
-                    opt_stage=True
-            elif re.match(r'^[\\(\\[]?[a-d][.\\)\\]]? ', line):
-                opt_stage = True
-
-            if not opt_stage and not solution_stage and not answer_stage:
-                # Not in option/solution/answer section: still accumulating question
-                if 'Options:' in line:
-                    before = line[:line.index('Options:')]
-                    if before.strip(): question_lines.append(before.strip())
-                else:
-                    question_lines.append(line)
-            # Option lines
-            elif opt_stage and re.match(r'^[\\(\\[]?[a-d][.\\)\\]]? ', line):
-                # Option lines: "a. XXX", "(b) YYY" etc.
-                option_str = re.sub(r'^[\\(\\[]?[a-d][.\\)\\]]? ', '', line)
-                options.append(option_str.strip())
-            # Special handling if options finished and answer/solution start
-            elif re.match(r'^(Answer|Ans|Correct):', line, re.I):
-                answer_stage = True
-                opt_stage=False
-                answer = re.sub(r'^(Answer|Ans|Correct):\\s*', '', line, flags=re.I).strip()
-            elif re.match(r'^(Explanation|Solution):', line, re.I):
-                solution_stage=True
-                sol_tmp = re.sub(r'^(Explanation|Solution):\\s*', '', line, flags=re.I).strip()
-                if sol_tmp: solution = sol_tmp
-            elif solution_stage:
-                solution += (" " + line).strip()
-
-        qtext = " ".join(question_lines).strip()
-        # Remove trailing "Options:" if any
-        qtext = re.sub(r'Options:.*', '', qtext, flags=re.I).strip()
-
-        # Ensure four options, pad
-        while len(options) < 4:
-            options.append("")
-        options = options[:4]
-        correct_index = find_answer_index(options, answer) if answer else 0
-
-        questions.append({
-            'question': qtext,
-            'options': options,
-            'correct': correct_index,
-            'solution': solution,
-        })
-
-    return questions
-
-############# Modern minimal UI #############
-class QuizFormatterApp:
+class QuizFormatterGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("QuizFormatter - Professional")
-        self.root['bg'] = "#EFF2F7"
-        style = ttk.Style()
-        style.theme_use('clam')
-        style.configure("TButton", font=("Arial", 11))
-        style.configure("TLabel", background="#EFF2F7", font=("Arial", 11))
-        # App Header
-        ttk.Label(root, text="QuizFormatter", font=('Arial', 22,'bold'), foreground="#2166ac").pack()
-        ttk.Label(root, text="Upload a .docx and get structured quiz tables.", font=("Arial", 11)).pack(pady=(0,12))
-        main = ttk.Frame(root, padding=18)
-        main.pack(fill="both", expand=True)
-        filefr = ttk.Frame(main)
-        filefr.pack(fill='x')
-        self.file_label = ttk.Label(filefr, text="No file selected", font=("Arial", 10))
-        self.file_label.pack(side='left')
-        self.upload_btn = ttk.Button(filefr, text="Upload .docx", command=self.load_file)
-        self.upload_btn.pack(side='right')
-        btn_frame = ttk.Frame(main)
-        btn_frame.pack(pady=8)
-        self.preview_btn = ttk.Button(btn_frame, text="Preview", state='disabled', command=self.preview)
-        self.preview_btn.pack(side='left', padx=5)
-        self.save_btn = ttk.Button(btn_frame, text="Convert & Save", state='disabled', command=self.convert_save)
-        self.save_btn.pack(side='left', padx=5)
-        self.console = ScrolledText(main, height=12, font=("Consolas", 10))
-        self.console.pack(fill='both', expand=True, pady=(8,0))
-        self.filepath = None
-        self.questions = []
+        self.root.title("QuizFormatter")
+        self.selected_theme = tk.StringVar(value="Light")
+        self.input_path = tk.StringVar()
+        self.output_path = tk.StringVar()
+        self.set_theme("Light")  # default theme
 
-    def log(self, msg, tag=None):
-        self.console.insert('end', msg + '\n')
-        self.console.see('end')
+        # ---- Top bar: Title and Settings icon ----
+        top_bar = ttk.Frame(root, style="Toolbar.TFrame")
+        top_bar.pack(fill="x", padx=0, pady=0)
+        title_label = ttk.Label(top_bar, text="QuizFormatter", style="Toolbar.TLabel", font=("Segoe UI", 16, "bold"))
+        title_label.pack(side="left", padx=(18, 6), pady=6)
+        
+        # Settings icon using built-in bitmap (no Pillow needed)
+        settings_icon = tk.Label(top_bar, bitmap="questhead", cursor="hand2", background="#ECEFF4")
+        settings_icon.pack(side="right", padx=16, pady=2)
+        settings_icon.bind("<Button-1>", self.show_settings_menu)
+        
+        # ---- Main Card Panel ----
+        main_panel = ttk.Frame(root, style="Card.TFrame", padding=32)
+        main_panel.place(relx=0.5, rely=0.5, anchor="center")
 
-    def load_file(self):
-        fn = filedialog.askopenfilename(filetypes=[("Word .docx", "*.docx")])
-        if not fn: return
-        self.filepath = fn
-        self.file_label.config(text=os.path.basename(fn))
-        try:
-            self.questions = parse_docx_questions(fn)
-            if not self.questions:
-                self.log("No questions found. Please check the file.")
-                self.preview_btn.state(['disabled'])
-                self.save_btn.state(['disabled'])
-            else:
-                self.log(f"{len(self.questions)} questions loaded.")
-                self.preview_btn.state(['!disabled'])
-                self.save_btn.state(['!disabled'])
-        except Exception as e:
-            self.log(f"Error: {e}")
-            self.preview_btn.state(['disabled'])
-            self.save_btn.state(['disabled'])
+        # Input row
+        ttk.Label(main_panel, text="Input File (.docx):", style="Card.TLabel", anchor="w").grid(row=0, column=0, sticky="w")
+        self.input_entry = ttk.Entry(main_panel, textvariable=self.input_path, width=44, state="readonly", font=("Segoe UI", 10))
+        self.input_entry.grid(row=1, column=0, sticky="ew", pady=(0,12))
+        self.browse_btn = ttk.Button(main_panel, text="Browse", style="Accent.TButton", command=self.browse_input)
+        self.browse_btn.grid(row=1, column=1, padx=(12,0))
 
-    def preview(self):
-        if not self.questions:
-            messagebox.showinfo("No Data", "No questions found.")
+        # Output row
+        ttk.Label(main_panel, text="Output File (.docx):", style="Card.TLabel", anchor="w").grid(row=2, column=0, sticky="w", pady=(16,0))
+        self.output_entry = ttk.Entry(main_panel, textvariable=self.output_path, width=44, state="readonly", font=("Segoe UI", 10))
+        self.output_entry.grid(row=3, column=0, sticky="ew", pady=(0,12))
+        self.saveas_btn = ttk.Button(main_panel, text="Save As", style="Accent.TButton", command=self.browse_output)
+        self.saveas_btn.grid(row=3, column=1, padx=(12,0))
+
+        # Convert button
+        self.convert_btn = ttk.Button(main_panel, text="Convert", style="Accent.TButton", command=self.convert)
+        self.convert_btn.grid(row=4, column=0, columnspan=2, pady=(30,0), ipadx=18, ipady=6)
+
+        main_panel.columnconfigure(0, weight=1)
+
+    def show_settings_menu(self, event):
+        menu = tk.Menu(self.root, tearoff=0)
+        theme_menu = tk.Menu(menu, tearoff=0)
+        theme_menu.add_radiobutton(label="Light", variable=self.selected_theme, command=lambda:self.set_theme("Light"))
+        theme_menu.add_radiobutton(label="Dark", variable=self.selected_theme, command=lambda:self.set_theme("Dark"))
+        menu.add_cascade(label="Theme", menu=theme_menu)
+        menu.tk_popup(event.x_root, event.y_root)
+        
+    def set_theme(self, theme):
+        s = ttk.Style()
+        if theme == "Light":
+            self.root.configure(bg="#EFF2F7")
+            s.configure('Card.TFrame', background="#fff", borderwidth=1, relief="ridge")
+            s.configure('Accent.TButton', background="#1976D2", foreground="white", font=("Segoe UI", 10, "bold"))
+            s.map('Accent.TButton', background=[('active', '#1565c0')])
+            s.configure('Card.TLabel', background="#fff", font=("Segoe UI", 12))
+            s.configure('Toolbar.TFrame', background="#ECEFF4")
+            s.configure('Toolbar.TLabel', background="#ECEFF4", foreground="#222")
+        else:
+            # Dark mode colors
+            self.root.configure(bg="#262B38")
+            s.configure('Card.TFrame', background="#232634", borderwidth=0)
+            s.configure('Accent.TButton', background="#5EA6F7", foreground="white", font=("Segoe UI", 10, "bold"))
+            s.map('Accent.TButton', background=[('active', '#0066cc')])
+            s.configure('Card.TLabel', background="#232634", foreground="#eee", font=("Segoe UI", 12))
+            s.configure('Toolbar.TFrame', background="#232634")
+            s.configure('Toolbar.TLabel', background="#232634", foreground="#eaeaea")
+        
+    def browse_input(self):
+        fn = filedialog.askopenfilename(filetypes=[("Word Documents", "*.docx")])
+        if fn:
+            self.input_path.set(fn)
+
+    def browse_output(self):
+        fn = filedialog.asksaveasfilename(defaultextension=".docx", filetypes=[("Word Documents", "*.docx")])
+        if fn:
+            self.output_path.set(fn)
+    
+    def convert(self):
+        # Stub -- add your conversion logic here
+        if not self.input_path.get() or not self.output_path.get():
+            messagebox.showwarning("Missing files", "Please select both input and output files.")
             return
-        w = tk.Toplevel(self.root)
-        w.title("Preview")
-        w.geometry("850x600")
-        st = ScrolledText(w, font=("Arial", 11))
-        st.pack(fill='both', expand=True)
-        for i, q in enumerate(self.questions, 1):
-            st.insert('end', f"Q{i}: {q['question']}\n")
-            for oi,opt in enumerate(q['options']):
-                mark = " (correct)" if oi==q['correct'] else ""
-                st.insert('end', f"   {chr(97+oi)}. {opt}{mark}\n")
-            st.insert('end', f"Solution: {q['solution']}\n{'-'*60}\n\n")
-        st['state'] = 'disabled'
+        messagebox.showinfo("Ready!", f"Would convert:\nInput: {self.input_path.get()}\nOutput: {self.output_path.get()}")
 
-    def convert_save(self):
-        if not self.questions:
-            messagebox.showerror("No Data", "No questions found to convert!")
-            return
-        fn = filedialog.asksaveasfilename(defaultextension=".docx", filetypes=[("Word .docx", "*.docx")])
-        if not fn: return
-        doc = Document()
-        for q in self.questions:
-            create_question_table(doc, q)
-            doc.add_paragraph()
-        doc.save(fn)
-        self.log(f"Document saved: {fn}")
-        messagebox.showinfo("Done!", f"Quiz document saved:\n{fn}")
-
-def main():
+if __name__ == '__main__':
     root = tk.Tk()
-    app = QuizFormatterApp(root)
+    root.geometry('450x430')
+    app = QuizFormatterGUI(root)
     root.mainloop()
-
-if __name__ == "__main__":
-    main()

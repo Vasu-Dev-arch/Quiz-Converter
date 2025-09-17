@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quiz Converter</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background-color: #f5f5f5;
+      color: #333;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      transition: background-color 0.4s ease, color 0.4s ease;
+    }
+
+    /* Top Bar */
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 18px 32px;
+      background-color: #222;
+      color: white;
+    }
+
+    .app-name {
+      font-size: 24px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+    }
+
+    .settings {
+      cursor: pointer;
+      font-size: 20px;
+    }
+
+    /* Center Box */
+    .container {
+      flex: 1;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .card {
+      background: white;
+      padding: 45px;
+      border-radius: 14px;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.15);
+      width: 380px;
+      transition: background-color 0.4s ease, box-shadow 0.4s ease;
+    }
+
+    .form-group {
+      margin-bottom: 28px;
+      text-align: left;
+    }
+
+    .form-group label {
+      display: block;
+      font-size: 16px;
+      margin-bottom: 8px;
+      color: #555;
+      transition: color 0.4s ease;
+    }
+
+    .input-wrapper {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-bottom: 1px solid #ccc;
+      padding-bottom: 8px;
+      transition: border-color 0.4s ease;
+    }
+
+    input[type="text"] {
+      border: none;
+      outline: none;
+      flex: 1;
+      padding: 8px 0;
+      font-size: 16px;
+      background: transparent;
+      color: inherit;
+    }
+
+    button {
+      padding: 10px 18px;
+      border: none;
+      border-radius: 999px; /* pill style */
+      background-color: #007bff;
+      color: white;
+      cursor: pointer;
+      transition: background-color 0.3s, transform 0.15s;
+      font-size: 15px;
+      min-width: 90px;
+    }
+
+    button:hover {
+      background-color: #0056b3;
+      transform: translateY(-1px);
+    }
+
+    .convert-btn {
+      width: 100%;
+      margin-top: 12px;
+      padding: 12px;
+      font-size: 16px;
+    }
+
+    /* Themes */
+    body.light {
+      background-color: #f5f5f5;
+      color: #000;
+    }
+
+    body.dark {
+      background-color: #1e1e1e;
+      color: #fff;
+    }
+
+    body.dark .card {
+      background: #2a2a2a;
+      box-shadow: 0 4px 12px rgba(255,255,255,0.08);
+    }
+
+    body.dark .form-group label {
+      color: #bbb;
+    }
+
+    body.dark .input-wrapper {
+      border-bottom: 1px solid #555;
+    }
+  </style>
+</head>
+<body class="light">
+  <!-- Top Bar -->
+  <header>
+    <div class="app-name">Quiz Converter</div>
+    <div class="settings" onclick="toggleTheme()">⚙️</div>
+  </header>
+
+  <!-- Main Body -->
+  <div class="container">
+    <div class="card">
+      <div class="form-group">
+        <label for="inputFile">Input</label>
+        <div class="input-wrapper">
+          <input type="text" id="inputFile" placeholder="Choose file...">
+          <button>Browse</button>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="outputFile">Output</label>
+        <div class="input-wrapper">
+          <input type="text" id="outputFile" placeholder="Save as...">
+          <button>Save</button>
+        </div>
+      </div>
+
+      <button class="convert-btn">Convert</button>
+    </div>
+  </div>
+
+  <script>
+    function toggleTheme() {
+      document.body.classList.toggle("dark");
+      document.body.classList.toggle("light");
+    }
+  </script>
+</body>
+</html>
