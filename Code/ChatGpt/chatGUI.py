@@ -27,11 +27,10 @@ QWidget { background: #0b0f13; color: #e6eef8; font-family: "Segoe UI", Arial, s
 
 /* Labels & inputs */
 QLabel { background: transparent; color: #cbd5e1; font-size: 15px; }
-QLineEdit { background: transparent; border: none; color: #e6eef8; font-size: 15px; padding: 6px 8px; }
+QLineEdit { background: transparent; border: none; color: #e6eef8; font-size: 15px; padding: 6px 8px; border-bottom: 1px solid #1f2937; }
 
 /* Thin bottom border containers to mimic modern underline input */
 #input_line, #output_line {
-  border-bottom: 1px solid #1f2937;
   padding-bottom: 8px;
 }
 
@@ -89,11 +88,10 @@ QWidget { background: #f5f5f5; color: #0f1720; font-family: "Segoe UI", Arial, s
 
 /* Labels & inputs */
 QLabel { background: transparent; color: #374151; font-size: 15px; }
-QLineEdit { background: transparent; border: none; color: #0f1720; font-size: 15px; padding: 6px 8px; }
+QLineEdit { background: transparent; border: none; color: #0f1720; font-size: 15px; padding: 6px 8px; border-bottom: 1px solid #e6e6e6; }
 
 /* underline style */
 #input_line, #output_line {
-  border-bottom: 1px solid #e6e6e6;
   padding-bottom: 8px;
 }
 
