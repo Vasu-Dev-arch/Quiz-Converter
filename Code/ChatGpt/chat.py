@@ -1,26 +1,19 @@
-#!/usr/bin/env python3
-"""
-QuizFormatter GUI
+# quiz_formatter_app_windows_ready.py
+# PySide6 desktop UI — Windows-ready, dark-theme default, true pill buttons, aligned inputs/buttons.
+# pip install PySide6 python-docx lxml
 
-- Robust parser that preserves Word OMath (equations), Unicode/Tamil, and handles many input layouts.
-- GUI with top-left app name, top-right settings (theme), centered card with Input/Output file pickers and Convert.
-- Produces debug_log.jsonl with details per parsed block.
-
-Save as quizformatter_gui.py and run:
-    pip install python-docx lxml
-    python quizformatter_gui.py
-"""
-
-import os
-import re
-import sys
-import json
-import unicodedata
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
-from tkinter.scrolledtext import ScrolledText
+import sys, re, os, unicodedata
+from pathlib import Path
 from lxml import etree
 from docx import Document
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QFont, QKeySequence, QAction
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
+    QHBoxLayout, QVBoxLayout, QFileDialog, QMessageBox, QFrame, QSizePolicy
+)
+
+# --- Conversion Logic Start --- (starts at line 28, ends at line 289 in this file)
 
 # XML namespaces for docx parsing
 NSMAP = {
@@ -325,305 +318,458 @@ def write_output_docx(questions, output_path):
         doc.add_paragraph()
     doc.save(output_path)
 
-# ----------------------
-# GUI
-# ----------------------
+# --- Conversion Logic End ---
 
-class QuizFormatterGUI(tk.Tk):
+# ------------ QSS (light & dark) ------------
+# We keep both in case you want to switch default later.
+DARK_QSS = r"""
+/* Base background and font */
+QWidget { background: #0b0f13; color: #e6eef8; font-family: "Segoe UI", Arial, sans-serif; }
+
+/* Topbar */
+#topbar { background: #0f1720; min-height: 64px; max-height: 64px; }
+#app_name { color: #ffffff; font-weight: 800; font-size: 32px; padding-left:6px; }
+
+/* Card */
+#card { background: #0f1728; border-radius: 12px; }
+
+/* Labels & inputs */
+QLabel { background: transparent; color: #cbd5e1; font-size: 15px; }
+QLabel#success_msg { color: #22c55e; font-size: 16px; }
+QLineEdit { background: transparent; border: none; color: #e6eef8; font-size: 15px; padding: 6px 8px; border-bottom: 1px solid #1f2937; }
+
+/* Thin bottom border containers to mimic modern underline input */
+#input_line, #output_line {
+  padding-bottom: 8px;
+}
+
+/* Pill buttons: using dynamic property pclass="pill" */
+QPushButton[pclass="pill"] {
+  background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #0a84ff, stop:1 #0a84ff);
+  color: white;
+  border-radius: 999px;
+  min-width: 110px;
+  min-height: 36px;
+  font-size: 16px;
+  padding: 6px 16px;
+  border: none;
+}
+QPushButton[pclass="pill"]:hover { background: #0066cc; }
+
+/* Convert button slightly smaller height than before for your request */
+QPushButton#convert_btn[pclass="pill"] {
+  min-height: 40px;
+  font-size: 16px;
+  padding: 8px 18px;
+}
+
+/* Theme toggle button */
+QPushButton#theme_btn {
+  background: rgba(255,255,255,0.04);
+  color: #d1d5db;
+  border: none;
+  min-width: 40px;
+  min-height: 40px;
+  border-radius: 8px;
+}
+
+/* Reset button */
+QPushButton#reset_btn {
+  background: rgba(255,255,255,0.04);
+  color: #d1d5db;
+  border: none;
+  min-width: 80px;
+  min-height: 40px;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+/* Toast */
+#toast {
+  background: rgba(255,255,255,0.06);
+  color: #e6eef8;
+  padding: 10px 14px;
+  border-radius: 10px;
+}
+
+/* Remove frame borders globally (we use QFrame as container) */
+QFrame { border: none; }
+"""
+
+LIGHT_QSS = r"""
+QWidget { background: #f5f5f5; color: #0f1720; font-family: "Segoe UI", Arial, sans-serif; }
+
+/* Topbar */
+#topbar { background: #111827; min-height: 64px; max-height: 64px; }
+#app_name { color: #ffffff; font-weight: 800; font-size: 32px; padding-left:6px; }
+
+/* Card */
+#card { background: #ffffff; border-radius: 12px; }
+
+/* Labels & inputs */
+QLabel { background: transparent; color: #374151; font-size: 15px; }
+QLabel#success_msg { color: #22c55e; font-size: 16px; }
+QLineEdit { background: transparent; border: none; color: #0f1720; font-size: 15px; padding: 6px 8px; border-bottom: 1px solid #e6e6e6; }
+
+/* underline style */
+#input_line, #output_line {
+  padding-bottom: 8px;
+}
+
+/* pill */
+QPushButton[pclass="pill"] {
+  background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #007bff, stop:1 #007bff);
+  color: white;
+  border-radius: 999px;
+  min-width: 110px;
+  min-height: 36px;
+  font-size: 16px;
+  padding: 6px 16px;
+  border: none;
+}
+QPushButton[pclass="pill"]:hover { background: #0056b3; }
+
+QPushButton#convert_btn[pclass="pill"] {
+  min-height: 40px;
+  font-size: 16px;
+  padding: 8px 18px;
+}
+
+/* Theme toggle */
+QPushButton#theme_btn {
+  background: rgba(0,0,0,0.06);
+  color: #111827;
+  border: none;
+  min-width: 40px;
+  min-height: 40px;
+  border-radius: 8px;
+}
+
+/* Reset button */
+QPushButton#reset_btn {
+  background: rgba(0,0,0,0.15); /* Slightly darker background for better contrast */
+  color: #ffffff; /* White text for high contrast against the background */
+  border: 1px solid #d1d5db; /* Added border for definition */
+  min-width: 80px;
+  min-height: 40px;
+  border-radius: 8px;
+  font-size: 14px;
+  padding: 0 10px; /* Added padding to ensure text fits well */
+}
+QPushButton#reset_btn:hover {
+  background: rgba(0,0,0,0.25); /* Darker on hover for feedback */
+  color: #ffffff;
+}
+
+/* Toast */
+#toast { background: rgba(0,0,0,0.65); color: #fff; padding: 10px 14px; border-radius: 10px; }
+QFrame { border: none; }
+"""
+
+# -------------------- Main Window --------------------
+class QuizFormatterMain(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.title("QuizFormatter")
-        self.geometry("980x700")
-        self.minsize(880, 620)
+        self.setWindowTitle("QuizFormatter")
+        self.setMinimumSize(880, 560)
 
-        # theme state
-        self.theme = tk.StringVar(value="light")
+        # central layout
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_v = QVBoxLayout(central)
+        main_v.setContentsMargins(0, 0, 0, 14)
+        main_v.setSpacing(0)
 
-        # file paths
-        self.input_path = tk.StringVar(value="")
-        self.output_path = tk.StringVar(value="")
+        # ----- Topbar (compact) -----
+        topbar = QWidget(objectName="topbar")
+        topbar_layout = QHBoxLayout(topbar)
+        topbar_layout.setContentsMargins(18, 10, 18, 10)
+        topbar_layout.setSpacing(8)
 
-        # parsed questions cache
-        self.questions = []
+        self.app_name = QLabel("QuizFormatter", objectName="app_name")
+        # fallback font; QSS will set size, but keep weight
+        self.app_name.setFont(QFont("Segoe UI", 28, QFont.Weight.Bold))
+        topbar_layout.addWidget(self.app_name, alignment=Qt.AlignLeft | Qt.AlignVCenter)
 
-        # build UI
-        self._build_style()
-        self._build_top_bar()
-        self._build_center_card()
-        self._build_bottom_area()
+        topbar_layout.addStretch()
 
-        # apply initial theme
-        self.apply_theme(self.theme.get())
+        # Reset button — added before theme button
+        self.reset_btn = QPushButton("Reset", objectName="reset_btn")
+        self.reset_btn.setCursor(Qt.PointingHandCursor)
+        self.reset_btn.setFixedSize(80, 40)
+        self.reset_btn.clicked.connect(self.reset_app)
+        self.reset_btn.setToolTip("Reset to starting state")
+        topbar_layout.addWidget(self.reset_btn, alignment=Qt.AlignRight | Qt.AlignVCenter)
 
-    def _build_style(self):
-        self.style = ttk.Style(self)
-        try:
-            # prefer clam for consistent look
-            self.style.theme_use("clam")
-        except Exception:
-            pass
-        # custom styles
-        self.style.configure("App.TFrame", background="#f3f6f9")
-        self.style.configure("Card.TFrame", background="#ffffff", relief="flat")
-        self.style.configure("Header.TLabel", font=("Inter", 18, "bold"), background="#f3f6f9")
-        self.style.configure("Muted.TLabel", font=("Inter", 10), foreground="#666666", background="#f3f6f9")
-        self.style.configure("TButton", padding=6)
+        # Theme toggle button (shows moon or sun) — more intuitive than gear
+        self.theme_btn = QPushButton("🌙", objectName="theme_btn")
+        self.theme_btn.setCursor(Qt.PointingHandCursor)
+        self.theme_btn.setFixedSize(40, 40)
+        self.theme_btn.clicked.connect(self.toggle_theme)
+        topbar_layout.addWidget(self.theme_btn, alignment=Qt.AlignRight | Qt.AlignVCenter)
 
-    def _build_top_bar(self):
-        top = ttk.Frame(self, style="App.TFrame", padding=(12,10))
-        top.pack(side=tk.TOP, fill=tk.X)
-        # App name top-left
-        lbl = ttk.Label(top, text="QuizFormatter", style="Header.TLabel")
-        lbl.pack(side=tk.LEFT)
+        main_v.addWidget(topbar)
 
-        # Spacer
-        top_spacer = ttk.Frame(top)
-        top_spacer.pack(side=tk.LEFT, expand=True)
+        # ----- Content area — centered card -----
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 18, 0, 18)
+        content_layout.setSpacing(0)
 
-        # Settings gear top-right (button)
-        gear_btn = ttk.Button(top, text="⚙️ Settings", command=self.open_settings)
-        gear_btn.pack(side=tk.RIGHT)
+        content_layout.addStretch()
 
-    def _build_center_card(self):
-        # center frame
-        center = ttk.Frame(self, style="App.TFrame")
-        center.pack(fill=tk.BOTH, expand=True, padx=24, pady=10)
+        # center horizontally
+        hwrap = QHBoxLayout()
+        hwrap.addStretch()
 
-        # Card frame (centered)
-        card = ttk.Frame(center, style="Card.TFrame", padding=20)
-        card.place(relx=0.5, rely=0.5, anchor=tk.CENTER, relwidth=0.76, relheight=0.6)
+        card = QFrame(objectName="card")
+        card.setFixedWidth(480)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(32, 26, 32, 26)
+        card_layout.setSpacing(16)
 
-        # Title (inside card)
-        title = ttk.Label(card, text="Convert exam questions to professor format", font=("Inter", 14, "bold"))
-        title.pack(anchor=tk.W, pady=(0,8))
+        # Input
+        lbl_input = QLabel("Input")
+        lbl_input.setFont(QFont("Segoe UI", 13))
+        card_layout.addWidget(lbl_input)
 
-        desc = ttk.Label(card, text="Select the input .docx file and choose where to save the formatted output.\nThe parser preserves math, Tamil/Unicode, and writes exact 8-row tables per question.",
-                         style="Muted.TLabel", justify=tk.LEFT)
-        desc.pack(anchor=tk.W, pady=(0,12))
+        input_line = QWidget(objectName="input_line")
+        input_layout = QHBoxLayout(input_line)
+        input_layout.setContentsMargins(6, 0, 6, 6)
+        input_layout.setSpacing(12)
 
-        # Form-like area
-        form = ttk.Frame(card)
-        form.pack(fill=tk.BOTH, expand=True)
+        self.input_edit = QLineEdit(placeholderText="Choose file...")
+        self.input_edit.setFixedHeight(36)
+        self.input_edit.setReadOnly(True)
+        self.input_edit.setFont(QFont("Segoe UI", 13))
+        self.input_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-        # Input row
-        in_row = ttk.Frame(form)
-        in_row.pack(fill=tk.X, pady=8)
-        in_label = ttk.Label(in_row, text="Input (.docx):", width=12)
-        in_label.pack(side=tk.LEFT, padx=(0,6))
+        self.browse_btn = QPushButton("Browse")
+        self.browse_btn.setProperty("pclass", "pill")
+        self.browse_btn.setCursor(Qt.PointingHandCursor)
+        self.browse_btn.setFixedHeight(36)
+        self.browse_btn.setFixedWidth(120)
+        self.browse_btn.setFlat(True)
+        self.browse_btn.clicked.connect(self.browse_file)
 
-        # use tk.Entry for easier bg/fg styling across themes
-        self.input_entry = tk.Entry(in_row, textvariable=self.input_path, font=("Inter", 11))
-        self.input_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0,8))
+        input_layout.addWidget(self.input_edit)
+        input_layout.addWidget(self.browse_btn)
+        card_layout.addWidget(input_line)
 
-        browse_btn = ttk.Button(in_row, text="Browse", command=self.browse_input)
-        browse_btn.pack(side=tk.LEFT)
+        # Output
+        lbl_output = QLabel("Output")
+        lbl_output.setFont(QFont("Segoe UI", 13))
+        card_layout.addWidget(lbl_output)
 
-        # Output row
-        out_row = ttk.Frame(form)
-        out_row.pack(fill=tk.X, pady=8)
-        out_label = ttk.Label(out_row, text="Output (.docx):", width=12)
-        out_label.pack(side=tk.LEFT, padx=(0,6))
+        output_line = QWidget(objectName="output_line")
+        output_layout = QHBoxLayout(output_line)
+        output_layout.setContentsMargins(6, 0, 6, 6)
+        output_layout.setSpacing(12)
 
-        self.output_entry = tk.Entry(out_row, textvariable=self.output_path, font=("Inter", 11))
-        self.output_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0,8))
+        self.output_edit = QLineEdit(placeholderText="Save as...")
+        self.output_edit.setFixedHeight(36)
+        self.output_edit.setFont(QFont("Segoe UI", 13))
+        self.output_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-        save_btn = ttk.Button(out_row, text="Save As", command=self.save_as)
-        save_btn.pack(side=tk.LEFT)
+        self.save_btn = QPushButton("Save")
+        self.save_btn.setProperty("pclass", "pill")
+        self.save_btn.setCursor(Qt.PointingHandCursor)
+        self.save_btn.setFixedHeight(36)
+        self.save_btn.setFixedWidth(120)
+        self.save_btn.setFlat(True)
+        self.save_btn.clicked.connect(self.save_as)
 
-        # Convert button (centered)
-        c_row = ttk.Frame(form)
-        c_row.pack(fill=tk.X, pady=(18,0))
-        convert_btn = ttk.Button(c_row, text="Convert", command=self.on_convert)
-        convert_btn.pack(side=tk.TOP, pady=(0,6), ipadx=12)
+        output_layout.addWidget(self.output_edit)
+        output_layout.addWidget(self.save_btn)
+        card_layout.addWidget(output_line)
 
-        # Preview & notes
-        preview_label = ttk.Label(form, text="Preview (parsed summary):", style="Muted.TLabel")
-        preview_label.pack(anchor=tk.W, pady=(14,0))
+        # Convert button — full width, slightly reduced height, pill
+        self.convert_btn = QPushButton("Convert", objectName="convert_btn")
+        self.convert_btn.setProperty("pclass", "pill")
+        self.convert_btn.setCursor(Qt.PointingHandCursor)
+        self.convert_btn.setFixedHeight(40)
+        self.convert_btn.setFlat(True)
+        self.convert_btn.clicked.connect(self.convert)
+        card_layout.addSpacing(6)
+        card_layout.addWidget(self.convert_btn)
 
-        self.preview_box = ScrolledText(form, height=6)
-        self.preview_box.pack(fill=tk.BOTH, expand=True, pady=(4,0))
+        # Success message label, initially hidden
+        self.success_label = QLabel("✅ Successfully Converted", objectName="success_msg")
+        self.success_label.setAlignment(Qt.AlignCenter)
+        self.success_label.setVisible(False)
+        card_layout.addSpacing(6)
+        card_layout.addWidget(self.success_label)
 
-    def _build_bottom_area(self):
-        bottom = ttk.Frame(self, style="App.TFrame", padding=8)
-        bottom.pack(side=tk.BOTTOM, fill=tk.X)
-        log_label = ttk.Label(bottom, text="Activity Log:", style="Muted.TLabel")
-        log_label.pack(anchor=tk.W)
-        self.log_box = ScrolledText(bottom, height=8)
-        self.log_box.pack(fill=tk.BOTH, expand=True, pady=(4,0))
+        card_layout.addStretch()
+        hwrap.addWidget(card)
+        hwrap.addStretch()
+        content_layout.addLayout(hwrap)
 
-        # set read-only for log and preview
-        self.preview_box.config(state=tk.DISABLED)
-        self.log_box.config(state=tk.DISABLED)
+        content_layout.addStretch()
+        main_v.addWidget(content)
 
-    # ------------------------
-    # UI actions
-    # ------------------------
-    def browse_input(self):
-        p = filedialog.askopenfilename(title="Select input .docx file", filetypes=[("Word Documents", "*.docx")])
-        if p:
-            self.input_path.set(p)
-            # set a default output filename next to input
-            base = os.path.splitext(os.path.basename(p))[0]
-            suggested = os.path.join(os.path.dirname(p), base + "_Formatted.docx")
-            if not self.output_path.get():
-                self.output_path.set(suggested)
-            self.log(f"Selected input: {p}")
+        # Toast
+        self.toast = QLabel("", objectName="toast")
+        self.toast.setVisible(False)
+        self.toast.setAlignment(Qt.AlignCenter)
+        toast_wrap = QHBoxLayout()
+        toast_wrap.addStretch()
+        toast_wrap.addWidget(self.toast)
+        toast_wrap.addStretch()
+        main_v.addLayout(toast_wrap)
+
+        # state
+        self.current_input_path = None
+        self.output_path = None
+
+        # default to dark theme as requested
+        self.is_dark = True
+
+        # IMPORTANT: use Fusion style so QSS reliably applies across Windows versions
+        app = QApplication.instance()
+        app.setStyle("Fusion")
+        # apply theme (app-level stylesheet) now
+        self.apply_theme()
+
+        # shortcuts
+        focus_output = QAction(self)
+        focus_output.setShortcut(QKeySequence("Ctrl+K"))
+        focus_output.triggered.connect(lambda: self.output_edit.setFocus())
+        self.addAction(focus_output)
+
+        # ensure theme button icon matches initial theme
+        self.update_theme_icon()
+
+    # ---------- Reset app state ----------
+    def reset_app(self):
+        # Clear input and output fields
+        self.input_edit.clear()
+        self.output_edit.clear()
+        # Reset paths
+        self.current_input_path = None
+        self.output_path = None
+        # Hide success message
+        self.success_label.setVisible(False)
+        # Optional: reset to dark theme if desired, but keeping current theme
+        # Show toast for feedback
+        self.show_toast("App reset to starting state", 1400)
+
+    # ---------- Styling helpers ----------
+    def apply_theme(self):
+        app = QApplication.instance()
+        if app is None:
+            return
+        if self.is_dark:
+            app.setStyleSheet(DARK_QSS)
+        else:
+            app.setStyleSheet(LIGHT_QSS)
+        # ensure app-name weight & font stays strong
+        self.app_name.setFont(QFont("Segoe UI", 30, QFont.Weight.DemiBold))
+        self.update_theme_icon()
+
+    def toggle_theme(self):
+        self.is_dark = not self.is_dark
+        self.apply_theme()
+
+    def update_theme_icon(self):
+        # show moon for dark, sun for light
+        if self.is_dark:
+            self.theme_btn.setText("☀")  # shows sun icon to indicate "switch to light"
+            self.theme_btn.setToolTip("Switch to light theme")
+        else:
+            self.theme_btn.setText("🌙")  # shows moon icon to indicate "switch to dark"
+            self.theme_btn.setToolTip("Switch to dark theme")
+
+    def show_toast(self, text: str, ms: int = 2000):
+        self.toast.setText(text)
+        self.toast.setVisible(True)
+        QTimer.singleShot(ms, lambda: self.toast.setVisible(False))
+
+    # ---------- File actions ----------
+    def browse_file(self):
+        fname, _ = QFileDialog.getOpenFileName(self, "Select input file", str(Path.home()),
+                                              "Word Documents (*.docx);;All Files (*)")
+        if not fname:
+            return
+        self.current_input_path = Path(fname)
+        self.input_edit.setText(self.current_input_path.name)
+        # suggest output (no forced .json placeholder)
+        if not self.output_edit.text().strip():
+            self.output_edit.setText(self.current_input_path.stem + "_Formatted")
+        self.show_toast(f"Loaded: {self.current_input_path.name}", 1400)
 
     def save_as(self):
-        default = self.output_path.get() or ""
-        initialdir = os.path.dirname(default) if default else os.getcwd()
-        savep = filedialog.asksaveasfilename(title="Save formatted output as",
-                                             defaultextension=".docx",
-                                             filetypes=[("Word Documents", "*.docx")],
-                                             initialdir=initialdir,
-                                             initialfile=os.path.basename(default) if default else "")
-        if savep:
-            self.output_path.set(savep)
-            self.log(f"Selected output: {savep}")
-
-    def on_convert(self):
-        inp = self.input_path.get().strip()
-        outp = self.output_path.get().strip()
-        if not inp or not os.path.isfile(inp):
-            messagebox.showerror("Input missing", "Please choose a valid input .docx file.")
+        default_name = (self.output_edit.text().strip() or
+                        (self.current_input_path.stem + "_Formatted" if self.current_input_path else "formatted-quiz"))
+        fname, _ = QFileDialog.getSaveFileName(self, "Save output as", str(Path.home() / default_name),
+                                              "Word Documents (*.docx);;All Files (*)")
+        if not fname:
             return
-        if not outp:
-            messagebox.showerror("Output missing", "Please choose where to save the output .docx file.")
-            return
+        self.output_path = Path(fname)
+        # show filename only, like the web mock
+        self.output_edit.setText(self.output_path.name)
+        self.show_toast("Save location set", 1200)
 
-        self.log("Parsing input...")
-        try:
-            questions = parse_docx_to_questions(inp, write_debug_log=True)
-        except Exception as e:
-            self.log(f"Error while parsing: {e}")
-            messagebox.showerror("Parse error", f"Failed to parse input file:\n{e}")
+    # ---------- Convert (plug backend here) ----------
+    def convert(self):
+        # Hide success message at the start of conversion
+        self.success_label.setVisible(False)
+
+        if not self.current_input_path or not self.current_input_path.exists():
+            QMessageBox.warning(self, "No input", "Please choose a valid input file first.")
             return
 
-        self.questions = questions
-        self.log(f"Parsed {len(questions)} question(s). Debug log written to debug_log.jsonl (in current folder).")
-        # preview first few
-        self.preview_box.config(state=tk.NORMAL)
-        self.preview_box.delete("1.0", tk.END)
-        if questions:
-            for i, q in enumerate(questions[:5]):
-                self.preview_box.insert(tk.END, f"Q{i+1}: {q['question'][:200]}\n")
-                for j,opt in enumerate(q['options']):
-                    label = ['A','B','C','D'][j]
-                    corr = " (correct)" if q['answer']==['a','b','c','d'][j] else ""
-                    self.preview_box.insert(tk.END, f"  {label}. {opt}{corr}\n")
-                if q['explanation']:
-                    self.preview_box.insert(tk.END, f"  Solution: {q['explanation']}\n")
-                if q.get('assumed'):
-                    self.preview_box.insert(tk.END, "  [Assumed answer: A]\n")
-                self.preview_box.insert(tk.END, "-"*40 + "\n")
+        out_name_text = self.output_edit.text().strip()
+        if self.output_path:
+            out_path = self.output_path
         else:
-            self.preview_box.insert(tk.END, "No questions detected. Check input file formatting.")
+            out_path = self.current_input_path.parent / (out_name_text or (self.current_input_path.stem + "_Formatted.docx"))
 
-        self.preview_box.config(state=tk.DISABLED)
+        try:
+            questions = parse_docx_to_questions(self.current_input_path, write_debug_log=True)
+        except Exception as ex:
+            QMessageBox.critical(self, "Parse error", f"Failed to parse input file:\n{ex}")
+            return
 
-        # Ask user to confirm export if there are assumed answers or missing options
+        # Check for warnings
         warnings = []
-        for i,q in enumerate(questions):
+        for i, q in enumerate(questions):
             if q.get('assumed'):
                 warnings.append(f"Q{i+1}: assumed answer (A).")
-            if any(o.strip()=="" for o in q['options']):
+            if any(o.strip() == "" for o in q['options']):
                 warnings.append(f"Q{i+1}: fewer than 4 options (padded empty).")
         if warnings:
-            proceed = messagebox.askyesno("Parsing Warnings",
-                                          "Parser made the following assumptions or found issues:\n\n" +
-                                          "\n".join(warnings[:10]) +
-                                          ("\n\n(Showing first 10)\n\nProceed with export?"))
-            if not proceed:
-                self.log("Export canceled by user due to warnings.")
+            msg = "Parser made the following assumptions or found issues:\n\n" + "\n".join(warnings[:10]) + ("\n\n(Showing first 10)\n\nProceed with export?" if len(warnings) > 10 else "\n\nProceed with export?")
+            reply = QMessageBox.question(self, "Parsing Warnings", msg, QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if reply == QMessageBox.No:
+                self.show_toast("Export canceled due to warnings.", 1800)
                 return
 
-        # write output
         try:
-            write_output_docx(questions, outp)
-            self.log(f"Exported formatted docx to: {outp}")
-            messagebox.showinfo("Success", f"Formatted document saved:\n{outp}")
-        except Exception as e:
-            self.log(f"Failed to save output: {e}")
-            messagebox.showerror("Save error", f"Failed to write output file:\n{e}")
+            write_output_docx(questions, out_path)
+            self.show_toast(f"Formatted and saved: {out_path.name}", 1800)
+            # Show success message after successful conversion
+            self.success_label.setVisible(True)
+        except Exception as ex:
+            QMessageBox.critical(self, "Save error", f"Failed to save output file:\n{ex}")
 
-    # ------------------------
-    # Logging & settings
-    # ------------------------
-    def log(self, text):
-        self.log_box.config(state=tk.NORMAL)
-        self.log_box.insert(tk.END, text + "\n")
-        self.log_box.see(tk.END)
-        self.log_box.config(state=tk.DISABLED)
-
-    def open_settings(self):
-        win = tk.Toplevel(self)
-        win.title("Settings")
-        win.geometry("340x160")
-        win.transient(self)
-        ttk.Label(win, text="Theme:").pack(anchor=tk.W, padx=12, pady=(10,4))
-        frame = ttk.Frame(win)
-        frame.pack(anchor=tk.W, padx=12)
-        ttk.Radiobutton(frame, text="Light", variable=self.theme, value="light", command=lambda: self.apply_theme("light")).pack(anchor=tk.W)
-        ttk.Radiobutton(frame, text="Dark", variable=self.theme, value="dark", command=lambda: self.apply_theme("dark")).pack(anchor=tk.W)
-        ttk.Label(win, text="(Theme affects background & editor colors)", style="Muted.TLabel").pack(anchor=tk.W, padx=12, pady=(8,0))
-
-    def apply_theme(self, theme_name):
-        """Apply a simple light/dark color scheme."""
-        theme_name = theme_name or "light"
-        bg_light = "#f3f6f9"
-        card_light = "#ffffff"
-        fg_light = "#111111"
-
-        bg_dark = "#1f2226"
-        card_dark = "#2b2f33"
-        fg_dark = "#e8eef6"
-
-        if theme_name == "dark":
-            bg = bg_dark; card = card_dark; fg = fg_dark
-            entry_bg = "#3a3f44"
-            entry_fg = "#ffffff"
-            text_bg = "#25282b"
-            text_fg = "#e8eef6"
-        else:
-            bg = bg_light; card = card_light; fg = fg_light
-            entry_bg = "#ffffff"
-            entry_fg = "#000000"
-            text_bg = "#ffffff"
-            text_fg = "#111111"
-
-        # root bg
-        self.configure(background=bg)
-        # style frames
-        self.style.configure("App.TFrame", background=bg)
-        self.style.configure("Card.TFrame", background=card)
-        self.style.configure("Header.TLabel", background=bg)
-        self.style.configure("Muted.TLabel", background=bg, foreground=("#bdbdbd" if theme_name=="dark" else "#666666"))
-        # entries are tk.Entry -> set directly
-        try:
-            self.input_entry.config(bg=entry_bg, fg=entry_fg, insertbackground=entry_fg)
-            self.output_entry.config(bg=entry_bg, fg=entry_fg, insertbackground=entry_fg)
-            self.preview_box.config(bg=text_bg, fg=text_fg, insertbackground=text_fg)
-            self.log_box.config(bg=text_bg, fg=text_fg, insertbackground=text_fg)
-        except Exception:
-            pass
-
-# ----------------------
-# Program entry
-# ----------------------
-
+# ------------ entrypoint ------------
 def main():
-    # dependency checks
-    try:
-        import docx  # noqa: F401
-        from lxml import etree  # noqa: F401
-    except Exception as e:
-        message = "Missing dependencies: please run\n\n    pip install python-docx lxml\n\nThen re-run this program."
-        print(message)
-        messagebox.showerror("Missing dependencies", message)
-        return
+    app = QApplication(sys.argv)
+    app.setApplicationName("QuizFormatter")
+    # ensure consistent QSS behavior on Windows
+    app.setStyle("Fusion")
 
-    app = QuizFormatterGUI()
-    app.mainloop()
+    window = QuizFormatterMain()
+    window.show()
+
+    # center the window
+    screen = app.primaryScreen().availableGeometry()
+    geom = window.geometry()
+    window.move((screen.width() - geom.width()) // 2, (screen.height() - geom.height()) // 2)
+
+    sys.exit(app.exec())
+
 
 if __name__ == "__main__":
     main()
