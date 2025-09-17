@@ -1,248 +1,123 @@
-# quiz_formatter_app_windows_ready.py
-# PySide6 desktop UI — Windows-ready, dark-theme default, true pill buttons, aligned inputs/buttons.
-# pip install PySide6 python-docx lxml
+# quiz_formatter_app_windows_ready_with_gemini.py
+# PySide6 desktop UI with Google Gemini API integration for robust parsing.
+# pip install PySide6 python-docx lxml google-generativeai python-dotenv
 
-import sys, re, os, unicodedata, json
+import sys, os, json, re
 from pathlib import Path
-from lxml import etree
 from docx import Document
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QThread, Signal
 from PySide6.QtGui import QFont, QKeySequence, QAction
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
-    QHBoxLayout, QVBoxLayout, QFileDialog, QMessageBox, QFrame, QSizePolicy
+    QHBoxLayout, QVBoxLayout, QFileDialog, QMessageBox, QFrame, QSizePolicy,
+    QProgressDialog
 )
+from dotenv import load_dotenv
+import google.generativeai as genai
 
-# --- Conversion Logic Start ---
-# XML namespaces for docx parsing
-NSMAP = {
-    'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
-    'm': 'http://schemas.openxmlformats.org/officeDocument/2006/math',
-}
+# Load environment variables from .env file
+load_dotenv()
 
-# ----------------------
-# Low-level helpers
-# ----------------------
+# --- Gemini API Logic Start ---
+class GeminiParser(QThread):
+    # Signals for communication with the main thread
+    parsing_finished = Signal(list, list) # list of questions, list of warnings
+    parsing_error = Signal(str)
+    progress_updated = Signal(int, str)
 
-def paragraph_full_text(paragraph):
-    """
-    Reconstruct paragraph text by iterating runs and math nodes in order.
-    This preserves OMath content (extracts m:t text) and normal text.
-    """
-    try:
-        xml = paragraph._p.xml.encode("utf-8")
-        root = etree.fromstring(xml)
-    except Exception:
-        return paragraph.text
-        
-    pieces = []
-    for child in root:
-        tag = etree.QName(child.tag).localname
-        if tag == "r":  # run
-            for t in child.findall('.//w:t', namespaces=NSMAP):
-                if t.text:
-                    pieces.append(t.text)
-            if child.findall('.//w:br', namespaces=NSMAP):
-                pieces.append('\n')
-        elif tag in ("oMath", "oMathPara"):
-            for mt in child.findall('.//m:t', namespaces=NSMAP):
-                if mt.text:
-                    pieces.append(mt.text)
-            # Add a space after a math element to prevent merging with surrounding text
-            pieces.append(' ')
-        else:
-            for t in child.findall('.//w:t', namespaces=NSMAP):
-                if t.text:
-                    pieces.append(t.text)
-    return "".join([p if p is not None else "" for p in pieces]).strip()
+    def __init__(self, full_text):
+        super().__init__()
+        self.full_text = full_text
+        self.questions = []
+        self.warnings = []
+        self._is_running = True
 
-def normalize_text(s):
-    """Unicode NFC and collapse whitespace, remove zero-width chars."""
-    if s is None:
-        return ""
-    s = unicodedata.normalize("NFC", s)
-    s = s.replace('\u200b', '').replace('\u200c', '').replace('\u200d', '')
-    s = re.sub(r'\r\n|\r', '\n', s)
-    s = re.sub(r'\n\s+\n', '\n\n', s)
-    s = re.sub(r'[ \t]+', ' ', s)
-    return s.strip()
-
-# ----------------------
-# Parsing algorithm
-# ----------------------
-
-SEPARATOR_RE = re.compile(r'^[\-\—\–\*\_]{1,}\s*$')
-
-def group_paragraphs_into_blocks(paragraphs):
-    blocks = []
-    curr = []
-    for p in paragraphs:
-        # Check if p is None before trying to strip it
-        if p is None:
-            continue
-        
-        if p.strip() == "" or SEPARATOR_RE.match(p.strip()):
-            if curr:
-                blocks.append(curr)
-                curr = []
-            continue
-        curr.append(p)
-    if curr:
-        blocks.append(curr)
-    return blocks
-
-def parse_block(block, idx):
-    """
-    Parse a block (list of paragraph strings) into a structured dictionary.
-    """
-    paras = [p for p in block if p and p.strip() != ""]
-    if not paras:
-        return None
-
-    full_text = " ".join(paras)
-    debug = {"block_index": idx, "raw_block_preview": full_text[:240]}
-
-    question_text = ""
-    options = [""] * 4
-    explanation = ""
-    answer_letter = None
-    assumed = False
-
-    # State machine for parsing
-    state = "QUESTION"
-    question_lines = []
-    option_lines = []
-    explanation_lines = []
-    
-    # Pre-parse for answer and explanation
-    for i, p in enumerate(paras):
-        if re.search(r'(?i)\bExplanation|Solution\b\s*:', p):
-            explanation_text = " ".join(paras[i:])
-            explanation = re.sub(r'(?i)\bExplanation|Solution\b\s*:', '', explanation_text).strip()
-            paras = paras[:i]
-            break
-            
-    # Re-run a simpler loop for the rest of the content
-    for p in paras:
-        if state == "QUESTION":
-            m_options = re.match(r'(?i)\s*Options?\s*:', p)
-            if m_options:
-                question_text = " ".join(question_lines).strip()
-                state = "OPTIONS"
-                # The rest of this line and subsequent lines are options
-                option_lines.append(re.sub(r'(?i)\s*Options?\s*:', '', p).strip())
-            elif re.match(r'^\s*[\(\[]?([a-d])[\)\].]?\s*', p, re.IGNORECASE):
-                # If no 'Options:' header, first line with (a) starts options
-                question_text = " ".join(question_lines).strip()
-                state = "OPTIONS"
-                option_lines.append(p)
-            elif re.search(r'(?i)\bAnswer|Ans\b\s*:', p):
-                # Answer is found before options, which is rare but possible
-                answer_text = re.sub(r'(?i)\bAnswer|Ans\b\s*:', '', p).strip()
-                m_letter = re.search(r'([A-Da-d])', answer_text)
-                if m_letter:
-                    answer_letter = m_letter.group(1).lower()
-                # Continue looking for question/options
-            else:
-                question_lines.append(p)
-        
-        elif state == "OPTIONS":
-            m_option = re.match(r'^\s*[\(\[]?([a-d])[\)\].]?\s*', p, re.IGNORECASE)
-            if m_option:
-                option_lines.append(p)
-            elif re.search(r'(?i)\bAnswer|Ans\b\s*:', p):
-                answer_text = re.sub(r'(?i)\bAnswer|Ans\b\s*:', '', p).strip()
-                m_letter = re.search(r'([A-Da-d])', answer_text)
-                if m_letter:
-                    answer_letter = m_letter.group(1).lower()
-            else:
-                # If a line doesn't start with an option label, it's likely a continuation
-                if option_lines:
-                    option_lines[-1] += " " + p
-                else:
-                    # this could be a bad option line; append to raw text for now
-                    question_lines.append(p)
-
-    # Finalize question text if state was never "OPTIONS"
-    if not question_text and question_lines:
-        question_text = " ".join(question_lines).strip()
-
-    # Parse options from gathered lines
-    if option_lines:
-        options_text = " ".join(option_lines)
-        opt_pairs = re.findall(
-            r'[\(\[]?([a-d])[\)\].]?\s*'
-            r'(.+?)'
-            r'(?=\s*[\(\[]?[a-d][\)\].]?|\s*$)',
-            options_text, flags=re.IGNORECASE | re.S
-        )
-        found_options_map = {label.lower(): text.strip() for label, text in opt_pairs}
-        options = [found_options_map.get(letter, "") for letter in ['a', 'b', 'c', 'd']]
-
-    # Post-processing answer to handle cases where it's not explicitly labeled
-    if not answer_letter:
-        raw_answer_text = ""
-        m_ans_post = re.search(r'(?i)\bAnswer|Ans\b\s*[:\-]?\s*([^\n\r]*)', full_text)
-        if m_ans_post:
-            raw_answer_text = m_ans_post.group(1).strip()
-            m_letter = re.search(r'([A-Da-d])', raw_answer_text)
-            if m_letter:
-                answer_letter = m_letter.group(1).lower()
-            else:
-                # Try to find a match between the answer text and an option
-                for i, opt_text in enumerate(options):
-                    if opt_text.lower() in raw_answer_text.lower():
-                        answer_letter = ['a', 'b', 'c', 'd'][i]
-                        break
-    
-    if not answer_letter:
-        answer_letter = 'a'
-        assumed = True
-
-    parsed = {
-        'question': normalize_text(question_text),
-        'options': [normalize_text(o) for o in options],
-        'answer': answer_letter,
-        'assumed': assumed,
-        'explanation': normalize_text(explanation),
-        'raw_block': normalize_text(full_text),
-        'debug': {
-            'block_idx': idx,
-            'raw_preview': full_text[:220],
-            'found_options': options,
-            'final_answer': answer_letter,
-            'assumed': assumed
-        }
-    }
-    
-    if (not parsed['question'] or len(parsed['question']) < 5) and all(o == "" for o in parsed['options']):
-        return None
-        
-    return parsed
-
-def parse_docx_to_questions(input_path, write_debug_log=True):
-    doc = Document(input_path)
-    paragraphs = [paragraph_full_text(p) for p in doc.paragraphs]
-    blocks = group_paragraphs_into_blocks(paragraphs)
-    questions = []
-    debug_entries = []
-    for i, block in enumerate(blocks):
-        q = parse_block(block, i)
-        if q:
-            questions.append(q)
-            debug_entries.append(q['debug'])
-    if write_debug_log:
+    def run(self):
         try:
-            with open("debug_log.jsonl", "w", encoding="utf-8") as f:
-                for e in debug_entries:
-                    f.write(json.dumps(e, ensure_ascii=False) + "\n")
-        except Exception as e:
-            pass
-    return questions
+            api_key = os.getenv("GOOGLE_API_KEY")
+            if not api_key:
+                raise ValueError("GOOGLE_API_KEY not found. Please set it in a .env file.")
+            
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel('gemini-1.5-flash')
 
-# ----------------------
-# Output builder
-# ----------------------
+            # Split the document content by separator for individual processing
+            blocks = re.split(r'—+', self.full_text)
+            
+            # The prompt is key to robust parsing
+            prompt_template = """
+            Analyze the following question block and extract the question, four options, the correct answer, and the explanation.
+            The correct answer should be a letter (a, b, c, or d). If the options are not labeled, assume the order is a, b, c, d.
+            If the answer is not explicitly stated, assume it's the first option.
+            
+            Format the output as a JSON array of a single object, like this:
+            [
+              {{
+                "question": "...",
+                "options": ["...", "...", "...", "..."],
+                "answer": "a",
+                "explanation": "..."
+              }}
+            ]
+            
+            Ensure all text, including special characters and formulas, is preserved exactly as it appears in the input.
+            
+            Question Block:
+            {block_text}
+            """
+            
+            # Process each block one by one to avoid exceeding token limits for large docs
+            for i, block_text in enumerate(blocks):
+                if not self._is_running:
+                    return
+                
+                block_text = block_text.strip()
+                if not block_text:
+                    continue
+
+                self.progress_updated.emit(i + 1, f"Parsing question {i + 1}...")
+
+                prompt = prompt_template.format(block_text=block_text)
+                
+                # Use a try-except block for each API call to handle potential errors
+                try:
+                    response = model.generate_content(prompt, generation_config=genai.types.GenerationConfig(response_mime_type="application/json"))
+                    data = json.loads(response.text)
+                    
+                    if data and isinstance(data, list) and len(data) > 0:
+                        parsed_data = data[0]
+                        
+                        # Add a warning if the answer was assumed
+                        if parsed_data.get('assumed_answer', False):
+                            self.warnings.append(f"Q{i+1}: Answer was not found and was assumed to be 'a'.")
+
+                        # Ensure a complete set of options
+                        if len(parsed_data.get('options', [])) < 4:
+                            self.warnings.append(f"Q{i+1}: Fewer than 4 options were found.")
+                            while len(parsed_data['options']) < 4:
+                                parsed_data['options'].append("")
+                        
+                        self.questions.append(parsed_data)
+                    else:
+                        self.warnings.append(f"Q{i+1}: Failed to parse block. AI returned empty or invalid JSON.")
+
+                except Exception as e:
+                    self.warnings.append(f"Q{i+1}: AI parsing error - {e}")
+
+            self.parsing_finished.emit(self.questions, self.warnings)
+            
+        except Exception as e:
+            self.parsing_error.emit(str(e))
+
+    def stop(self):
+        self._is_running = False
+
+# --- Gemini API Logic End ---
+
+# --- Document I/O Start ---
+def paragraph_full_text(paragraph):
+    # This helper function is still needed to extract raw text
+    return "".join(t.text for t in paragraph.runs).strip()
 
 def write_output_docx(questions, output_path):
     doc = Document()
@@ -260,9 +135,11 @@ def write_output_docx(questions, output_path):
         table.cell(1, 1).merge(table.cell(1, 2)).text = "multiple_choice"
 
         opts = q.get('options', ['', '', '', ''])
-        letter = q.get('answer', 'a').lower()
+        # AI returns a letter, so find its index
+        answer_letter = q.get('answer', 'a').lower()
         idx_map = {'a': 0, 'b': 1, 'c': 2, 'd': 3}
-        correct_idx = idx_map.get(letter, 0)
+        correct_idx = idx_map.get(answer_letter, 0)
+        
         for i in range(4):
             r = 2 + i
             table.cell(r, 0).text = "Option"
@@ -275,117 +152,24 @@ def write_output_docx(questions, output_path):
         table.cell(7, 0).text = "Marks"
         table.cell(7, 1).text = "1"
         table.cell(7, 2).text = "0"
-
+        
         doc.add_paragraph()
     doc.save(output_path)
+# --- Document I/O End ---
 
-# --- Conversion Logic End ---
-
-# ------------ QSS (light & dark) ------------
-DARK_QSS = r"""
-/* Base background and font */
-QWidget { background: #0b0f13; color: #e6eef8; font-family: "Segoe UI", Arial, sans-serif; }
-#topbar { background: #0f1720; min-height: 64px; max-height: 64px; }
-#app_name { color: #ffffff; font-weight: 800; font-size: 32px; padding-left:6px; }
-#card { background: #0f1728; border-radius: 12px; }
-QLabel { background: transparent; color: #cbd5e1; font-size: 15px; }
-QLabel#success_msg { color: #22c55e; font-size: 16px; }
-QLineEdit { background: transparent; border: none; color: #e6eef8; font-size: 15px; padding: 6px 8px; border-bottom: 1px solid #1f2937; }
-#input_line, #output_line { padding-bottom: 8px; }
-QPushButton[pclass="pill"] {
-  background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #0a84ff, stop:1 #0a84ff);
-  color: white;
-  border-radius: 999px;
-  min-width: 110px;
-  min-height: 36px;
-  font-size: 16px;
-  padding: 6px 16px;
-  border: none;
-}
-QPushButton[pclass="pill"]:hover { background: #0066cc; }
-QPushButton#convert_btn[pclass="pill"] { min-height: 40px; font-size: 16px; padding: 8px 18px; }
-QPushButton#theme_btn {
-  background: rgba(255,255,255,0.04);
-  color: #d1d5db;
-  border: none;
-  min-width: 40px;
-  min-height: 40px;
-  border-radius: 8px;
-}
-QPushButton#reset_btn {
-  background: rgba(255,255,255,0.04);
-  color: #d1d5db;
-  border: none;
-  min-width: 80px;
-  min-height: 40px;
-  border-radius: 8px;
-  font-size: 14px;
-}
-#toast {
-  background: rgba(255,255,255,0.06);
-  color: #e6eef8;
-  padding: 10px 14px;
-  border-radius: 10px;
-}
-QFrame { border: none; }
-"""
-
-LIGHT_QSS = r"""
-QWidget { background: #f5f5f5; color: #0f1720; font-family: "Segoe UI", Arial, sans-serif; }
-#topbar { background: #111827; min-height: 64px; max-height: 64px; }
-#app_name { color: #ffffff; font-weight: 800; font-size: 32px; padding-left:6px; }
-#card { background: #ffffff; border-radius: 12px; }
-QLabel { background: transparent; color: #374151; font-size: 15px; }
-QLabel#success_msg { color: #22c55e; font-size: 16px; }
-QLineEdit { background: transparent; border: none; color: #0f1720; font-size: 15px; padding: 6px 8px; border-bottom: 1px solid #e6e6e6; }
-#input_line, #output_line { padding-bottom: 8px; }
-QPushButton[pclass="pill"] {
-  background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #007bff, stop:1 #007bff);
-  color: white;
-  border-radius: 999px;
-  min-width: 110px;
-  min-height: 36px;
-  font-size: 16px;
-  padding: 6px 16px;
-  border: none;
-}
-QPushButton[pclass="pill"]:hover { background: #0056b3; }
-QPushButton#convert_btn[pclass="pill"] { min-height: 40px; font-size: 16px; padding: 8px 18px; }
-QPushButton#theme_btn {
-  background: rgba(0,0,0,0.06);
-  color: #111827;
-  border: none;
-  min-width: 40px;
-  min-height: 40px;
-  border-radius: 8px;
-}
-/* Reset button */
-QPushButton#reset_btn {
-  background: rgba(0,0,0,0.15); /* Slightly darker background for better contrast */
-  color: #ffffff; /* White text for high contrast against the background */
-  border: 1px solid #d1d5db; /* Added border for definition */
-  min-width: 80px;
-  min-height: 40px;
-  border-radius: 8px;
-  font-size: 14px;
-  padding: 0 10px; /* Added padding to ensure text fits well */
-}
-QPushButton#reset_btn:hover {
-  background: rgba(0,0,0,0.25); /* Darker on hover for feedback */
-  color: #ffffff;
-}
-
-
-#toast { background: rgba(0,0,0,0.65); color: #fff; padding: 10px 14px; border-radius: 10px; }
-QFrame { border: none; }
-"""
-
-# -------------------- Main Window --------------------
+# --- UI and Main Application ---
 class QuizFormatterMain(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("QuizFormatter")
         self.setMinimumSize(880, 560)
+        
+        self.current_input_path = None
+        self.output_path = None
+        self.is_dark = True
+        self.parser_thread = None
+        
+        # --- UI Setup ---
         central = QWidget()
         self.setCentralWidget(central)
         main_v = QVBoxLayout(central)
@@ -493,9 +277,7 @@ class QuizFormatterMain(QMainWindow):
         toast_wrap.addWidget(self.toast)
         toast_wrap.addStretch()
         main_v.addLayout(toast_wrap)
-        self.current_input_path = None
-        self.output_path = None
-        self.is_dark = True
+
         app = QApplication.instance()
         app.setStyle("Fusion")
         self.apply_theme()
@@ -570,30 +352,151 @@ class QuizFormatterMain(QMainWindow):
             out_path = self.current_input_path.parent / (out_name_text or (self.current_input_path.stem + "_Formatted.docx"))
 
         try:
-            questions = parse_docx_to_questions(self.current_input_path, write_debug_log=True)
-        except Exception as ex:
-            QMessageBox.critical(self, "Parse error", f"Failed to parse input file:\n{ex}")
-            return
+            doc = Document(self.current_input_path)
+            full_text = "\n".join([paragraph_full_text(p) for p in doc.paragraphs])
+            
+            self.progress_dialog = QProgressDialog("Parsing with AI...", "Cancel", 0, len(re.split(r'—+', full_text)), self)
+            self.progress_dialog.setWindowTitle("Converting...")
+            self.progress_dialog.setWindowModality(Qt.WindowModal)
+            self.progress_dialog.show()
+            
+            self.parser_thread = GeminiParser(full_text)
+            self.parser_thread.parsing_finished.connect(self.on_parsing_finished)
+            self.parser_thread.parsing_error.connect(self.on_parsing_error)
+            self.parser_thread.progress_updated.connect(self.on_progress_updated)
+            self.progress_dialog.canceled.connect(self.parser_thread.stop)
+            
+            self.parser_thread.start()
 
-        warnings = []
-        for i, q in enumerate(questions):
-            if q.get('assumed'):
-                warnings.append(f"Q{i+1}: assumed answer (A).")
-            if any(o.strip() == "" for o in q['options']):
-                warnings.append(f"Q{i+1}: fewer than 4 options (padded empty).")
+        except Exception as ex:
+            QMessageBox.critical(self, "Error", f"Failed to start conversion:\n{ex}")
+    
+    def on_progress_updated(self, value, message):
+        self.progress_dialog.setValue(value)
+        self.progress_dialog.setLabelText(message)
+
+    def on_parsing_finished(self, questions, warnings):
+        self.progress_dialog.close()
+        self.parser_thread = None
+        
         if warnings:
-            msg = "Parser made the following assumptions or found issues:\n\n" + "\n".join(warnings[:10]) + ("\n\n(Showing first 10)\n\nProceed with export?" if len(warnings) > 10 else "\n\nProceed with export?")
-            reply = QMessageBox.question(self, "Parsing Warnings", msg, QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            msg = "AI Parser made the following assumptions or found issues:\n\n" + "\n".join(warnings[:10])
+            if len(warnings) > 10:
+                msg += "\n\n(Showing first 10)\n\nProceed with export?"
+            else:
+                msg += "\n\nProceed with export?"
+            reply = QMessageBox.question(self, "AI Parsing Warnings", msg, QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if reply == QMessageBox.No:
                 self.show_toast("Export canceled due to warnings.", 1800)
                 return
 
         try:
-            write_output_docx(questions, out_path)
-            self.show_toast(f"Formatted and saved: {out_path.name}", 1800)
+            write_output_docx(questions, self.output_path)
+            self.show_toast(f"Formatted and saved: {self.output_path.name}", 1800)
             self.success_label.setVisible(True)
         except Exception as ex:
             QMessageBox.critical(self, "Save error", f"Failed to save output file:\n{ex}")
+
+    def on_parsing_error(self, error_message):
+        self.progress_dialog.close()
+        self.parser_thread = None
+        QMessageBox.critical(self, "AI Service Error", f"An error occurred with the AI API:\n{error_message}")
+
+# --- QSS and Main Entry Point (unchanged) ---
+DARK_QSS = r"""
+QWidget { background: #0b0f13; color: #e6eef8; font-family: "Segoe UI", Arial, sans-serif; }
+#topbar { background: #0f1720; min-height: 64px; max-height: 64px; }
+#app_name { color: #ffffff; font-weight: 800; font-size: 32px; padding-left:6px; }
+#card { background: #0f1728; border-radius: 12px; }
+QLabel { background: transparent; color: #cbd5e1; font-size: 15px; }
+QLabel#success_msg { color: #22c55e; font-size: 16px; }
+QLineEdit { background: transparent; border: none; color: #e6eef8; font-size: 15px; padding: 6px 8px; border-bottom: 1px solid #1f2937; }
+#input_line, #output_line { padding-bottom: 8px; }
+QPushButton[pclass="pill"] {
+  background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #0a84ff, stop:1 #0a84ff);
+  color: white;
+  border-radius: 999px;
+  min-width: 110px;
+  min-height: 36px;
+  font-size: 16px;
+  padding: 6px 16px;
+  border: none;
+}
+QPushButton[pclass="pill"]:hover { background: #0066cc; }
+QPushButton#convert_btn[pclass="pill"] { min-height: 40px; font-size: 16px; padding: 8px 18px; }
+QPushButton#theme_btn {
+  background: rgba(255,255,255,0.04);
+  color: #d1d5db;
+  border: none;
+  min-width: 40px;
+  min-height: 40px;
+  border-radius: 8px;
+}
+QPushButton#reset_btn {
+  background: rgba(255,255,255,0.04);
+  color: #d1d5db;
+  border: none;
+  min-width: 80px;
+  min-height: 40px;
+  border-radius: 8px;
+  font-size: 14px;
+}
+#toast {
+  background: rgba(255,255,255,0.06);
+  color: #e6eef8;
+  padding: 10px 14px;
+  border-radius: 10px;
+}
+QFrame { border: none; }
+"""
+
+LIGHT_QSS = r"""
+QWidget { background: #f5f5f5; color: #0f1720; font-family: "Segoe UI", Arial, sans-serif; }
+#topbar { background: #111827; min-height: 64px; max-height: 64px; }
+#app_name { color: #ffffff; font-weight: 800; font-size: 32px; padding-left:6px; }
+#card { background: #ffffff; border-radius: 12px; }
+QLabel { background: transparent; color: #374151; font-size: 15px; }
+QLabel#success_msg { color: #22c55e; font-size: 16px; }
+QLineEdit { background: transparent; border: none; color: #0f1720; font-size: 15px; padding: 6px 8px; border-bottom: 1px solid #e6e6e6; }
+#input_line, #output_line { padding-bottom: 8px; }
+QPushButton[pclass="pill"] {
+  background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #007bff, stop:1 #007bff);
+  color: white;
+  border-radius: 999px;
+  min-width: 110px;
+  min-height: 36px;
+  font-size: 16px;
+  padding: 6px 16px;
+  border: none;
+}
+QPushButton[pclass="pill"]:hover { background: #0056b3; }
+QPushButton#convert_btn[pclass="pill"] { min-height: 40px; font-size: 16px; padding: 8px 18px; }
+QPushButton#theme_btn {
+  background: rgba(0,0,0,0.06);
+  color: #111827;
+  border: none;
+  min-width: 40px;
+  min-height: 40px;
+  border-radius: 8px;
+}
+/* Reset button */
+QPushButton#reset_btn {
+  background: rgba(0,0,0,0.15); /* Slightly darker background for better contrast */
+  color: #ffffff; /* White text for high contrast against the background */
+  border: 1px solid #d1d5db; /* Added border for definition */
+  min-width: 80px;
+  min-height: 40px;
+  border-radius: 8px;
+  font-size: 14px;
+  padding: 0 10px; /* Added padding to ensure text fits well */
+}
+QPushButton#reset_btn:hover {
+  background: rgba(0,0,0,0.25); /* Darker on hover for feedback */
+  color: #ffffff;
+}
+#toast { background: rgba(0,0,0,0.65); color: #fff; padding: 10px 14px; border-radius: 10px; }
+QFrame { border: none; }
+"""
 
 def main():
     app = QApplication(sys.argv)
