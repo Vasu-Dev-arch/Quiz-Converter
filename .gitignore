@@ -29,3 +29,5 @@ Thumbs.db
 !.gitignore
 !README.md
 !requirements.txt
+
+.env
